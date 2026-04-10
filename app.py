@@ -308,31 +308,41 @@ def quick_scan(url, page_name='Scanned'):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
             vname = v.get('title','') or 'video'
-            # Find the trigger button/link that opens this video instead of the container
+            # Find the trigger button/link that opens this video
             _vid_loc = None
-            # Look for a nearby button/link with data attributes pointing to this video
-            _parent = v.parent
-            for _ in range(6):  # walk up max 6 levels
-                if _parent is None: break
-                # check if any sibling or ancestor button is the trigger
-                _btn = _parent.find_previous(['button','a'], attrs=lambda a: a and (
-                    'play' in ' '.join(str(v) for v in a.values()).lower() or
-                    'video' in ' '.join(str(v) for v in a.values()).lower() or
-                    'modal' in ' '.join(str(v) for v in a.values()).lower()
-                ))
-                if _btn:
-                    _vid_loc = detect_location(_btn)
+            # Walk up DOM looking for a trigger button with play/video/modal keywords
+            _par = v.parent
+            for _ in range(8):
+                if _par is None or _par.name is None:
                     break
-                _parent = _parent.parent
+                # search siblings and parent for a button/link trigger
+                for _el in _par.find_all(['button', 'a']):
+                    _el_str = ' '.join([
+                        ' '.join(_el.get('class', [])),
+                        _el.get('id', ''),
+                        _el.get('data-target', ''),
+                        _el.get('data-modal', ''),
+                        _el.get('aria-label', ''),
+                        _el.get_text(strip=True)
+                    ]).lower()
+                    if any(kw in _el_str for kw in ['play', 'video', 'watch', 'modal']):
+                        _vid_loc = detect_location(_el)
+                        break
+                if _vid_loc:
+                    break
+                _par = _par.parent
             if not _vid_loc:
-                # fallback: use section/article/div containing the video
-                _container = v.find_parent(['section','article','main','div[class]'])
-                _vid_loc = detect_location(_container) if _container else detect_location(v)
-                # if still modal, try one level higher
-                if _vid_loc == 'modal':
-                    _outer = v.find_parent(['section','article','main'])
-                    if _outer:
-                        _vid_loc = detect_location(_outer)
+                # fallback: nearest section/article outside modal
+                _outer = v.find_parent(['section', 'article', 'main'])
+                if _outer:
+                    _vid_loc = detect_location(_outer)
+                    # if still modal go one more level up
+                    if _vid_loc == 'modal':
+                        _outer2 = _outer.find_parent(['section', 'article', 'main'])
+                        if _outer2:
+                            _vid_loc = detect_location(_outer2)
+                if not _vid_loc:
+                    _vid_loc = detect_location(v)
             # Clean video title — use page h1/h2 if iframe title is empty or a URL
             if not vname or vname == 'video' or vname.startswith('http'):
                 _h = soup.find(['h1','h2'])
