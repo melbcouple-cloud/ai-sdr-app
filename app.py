@@ -218,35 +218,62 @@ def quick_scan(url):
             pass
     if not html:
         return []
-    from bs4 import BeautifulSoup
+        from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
     rows = []
     dl_exts = {".pdf",".docx",".xlsx",".zip",".ppt",".pptx"}
+
+    def detect_location(tag):
+        """Walk up the DOM tree to detect header/footer/nav/hero/modal/sidebar/inpage."""
+        for parent in tag.parents:
+            if parent.name is None:
+                continue
+            tag_name = parent.name.lower()
+            classes  = " ".join(parent.get("class", [])).lower()
+            pid      = (parent.get("id") or "").lower()
+            combined = f"{tag_name} {classes} {pid}"
+            if tag_name == "header" or any(x in combined for x in ["header","site-header","navbar","nav-top","top-nav","masthead"]):
+                return "header"
+            if tag_name == "footer" or any(x in combined for x in ["footer","site-footer","footer-nav","foot-"]):
+                return "footer"
+            if tag_name == "nav" or any(x in combined for x in ["nav","navigation","main-nav","primary-nav","menu"]):
+                return "header"
+            if any(x in combined for x in ["hero","banner","jumbotron","splash","carousel"]):
+                return "hero"
+            if any(x in combined for x in ["modal","dialog","popup","overlay","lightbox"]):
+                return "modal"
+            if any(x in combined for x in ["sidebar","side-bar","aside","widget"]):
+                return "sidebar"
+        return "inpage"
+
     for a in soup.find_all('a', href=True):
         href = a.get('href','').strip()
         text = a.get_text(strip=True) or href
         if not text or len(text) < 2:
             continue
-        full = urljoin(url, href)
+        full = urljoin(clean_url, href)
         fp   = urlparse(full)
         ext  = os.path.splitext(fp.path)[1].lower()
+        loc  = detect_location(a)
         if ext in dl_exts:
-            rows.append({"Page":"Scanned","Category":"download","Event Name":f"download_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":"inpage","CTA Text":text,"Business Intent":"consideration","Page URL":url,"Event ID":""})
+            rows.append({"Page":"Scanned","Category":"download","Event Name":f"download_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"consideration","Page URL":url,"Event ID":""})
         elif fp.netloc and fp.netloc != parsed.netloc:
-            rows.append({"Page":"Scanned","Category":"exit","Event Name":f"exit_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":"inpage","CTA Text":text,"Business Intent":"exit","Page URL":url,"Event ID":""})
+            rows.append({"Page":"Scanned","Category":"exit","Event Name":f"exit_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"exit","Page URL":url,"Event ID":""})
         elif href and not href.startswith('#') and not href.startswith('mailto'):
-            rows.append({"Page":"Scanned","Category":"navigation","Event Name":f"link_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":"inpage","CTA Text":text,"Business Intent":"engagement","Page URL":url,"Event ID":""})
+            rows.append({"Page":"Scanned","Category":"navigation","Event Name":f"link_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"engagement","Page URL":url,"Event ID":""})
     for frm in soup.find_all('form'):
         fname = frm.get('id') or frm.get('name') or 'contact_form'
         if isinstance(fname,list): fname='_'.join(fname)
+        loc = detect_location(frm)
         for ev,intent in [('form_begins','acquisition'),('form_success','conversion'),('form_error','engagement'),('form_abandoned','engagement')]:
-            rows.append({"Page":"Scanned","Category":"form","Event Name":f"{ev}_{slug(str(fname))[:20]}","Action":ev,"Label":str(fname),"CTA Location":"inpage","CTA Text":str(fname),"Business Intent":intent,"Page URL":url,"Event ID":""})
+            rows.append({"Page":"Scanned","Category":"form","Event Name":f"{ev}_{slug(str(fname))[:20]}","Action":ev,"Label":str(fname),"CTA Location":loc,"CTA Text":str(fname),"Business Intent":intent,"Page URL":url,"Event ID":""})
     for v in soup.find_all(['video','iframe']):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
             vname = v.get('title','') or 'video'
+            loc = detect_location(v)
             for ev in ['video_begins','video_progression_25','video_progression_50','video_progression_75','video_ends']:
-                rows.append({"Page":"Scanned","Category":"video","Event Name":ev,"Action":ev.split("_")[0],"Label":vname,"CTA Location":"inpage","CTA Text":src,"Business Intent":"consideration","Page URL":url,"Event ID":""})
+                rows.append({"Page":"Scanned","Category":"video","Event Name":ev,"Action":ev.split("_")[0],"Label":vname,"CTA Location":loc,"CTA Text":src,"Business Intent":"consideration","Page URL":url,"Event ID":""})
     return rows
 
 # APP
