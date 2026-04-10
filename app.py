@@ -294,10 +294,13 @@ def quick_scan(url, page_name='Scanned'):
         if isinstance(fname, list): fname = '_'.join(fname)
         fname = str(fname).strip()
         loc = detect_location(frm)
+        # Use page URL slug for clean event names (e.g. form_start_sign_up)
+        _page_slug = clean_url.rstrip('/').split('/')[-1] or 'home'
+        _page_slug = slug(_page_slug)[:20]
         for ev, intent in [('form_start', 'acquisition'), ('form_submit', 'conversion'),
                            ('form_error', 'engagement'), ('form_abandon', 'engagement')]:
             rows.append({"Page": page_name, "Category": "form",
-                         "Event Name": f"{ev}_{slug(fname)[:25]}",
+                         "Event Name": f"{ev}_{_page_slug}",
                          "Action": ev, "Label": fname,
                          "CTA Location": loc, "CTA Text": _btn_text or fname,
                          "Business Intent": intent, "Page URL": clean_url, "Event ID": ""})
@@ -305,9 +308,42 @@ def quick_scan(url, page_name='Scanned'):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
             vname = v.get('title','') or 'video'
-            loc = detect_location(v)
-            for ev in ['video_begins','video_progression_25','video_progression_50','video_progression_75','video_ends']:
-                rows.append({"Page":page_name,"Category":"video","Event Name":ev,"Action":ev.split("_")[0],"Label":vname,"CTA Location":loc,"CTA Text":src,"Business Intent":"consideration","Page URL":clean_url,"Event ID":""})
+            # Find the trigger button/link that opens this video instead of the container
+            _vid_loc = None
+            # Look for a nearby button/link with data attributes pointing to this video
+            _parent = v.parent
+            for _ in range(6):  # walk up max 6 levels
+                if _parent is None: break
+                # check if any sibling or ancestor button is the trigger
+                _btn = _parent.find_previous(['button','a'], attrs=lambda a: a and (
+                    'play' in ' '.join(str(v) for v in a.values()).lower() or
+                    'video' in ' '.join(str(v) for v in a.values()).lower() or
+                    'modal' in ' '.join(str(v) for v in a.values()).lower()
+                ))
+                if _btn:
+                    _vid_loc = detect_location(_btn)
+                    break
+                _parent = _parent.parent
+            if not _vid_loc:
+                # fallback: use section/article/div containing the video
+                _container = v.find_parent(['section','article','main','div[class]'])
+                _vid_loc = detect_location(_container) if _container else detect_location(v)
+                # if still modal, try one level higher
+                if _vid_loc == 'modal':
+                    _outer = v.find_parent(['section','article','main'])
+                    if _outer:
+                        _vid_loc = detect_location(_outer)
+            # Clean video title — use page h1/h2 if iframe title is empty or a URL
+            if not vname or vname == 'video' or vname.startswith('http'):
+                _h = soup.find(['h1','h2'])
+                vname = _h.get_text(strip=True)[:50] if _h else page_name
+            # Intent: education/awareness sites → engagement; fallback → engagement
+            _intent = 'engagement'
+            for ev in ['video_start','video_progress_25','video_progress_50','video_progress_75','video_complete']:
+                rows.append({"Page":page_name,"Category":"video","Event Name":ev,
+                             "Action":"video","Label":vname,
+                             "CTA Location":_vid_loc,"CTA Text":vname,
+                             "Business Intent":_intent,"Page URL":clean_url,"Event ID":""})
     return rows
 
 # APP
@@ -417,7 +453,17 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
                             or len(_text) > 80):
                         continue
                     if _text and 1 < len(_text) < 80:
-                        _page_names[_path] = _text[:60]
+                        # Prefer shorter, nav-style names; skip CTA phrases
+                        _cta_words = ['sign up','learn more','read more','click here','get started',
+                                      'discover','explore','view','see how','stay up']
+                        _is_cta = any(c in _text.lower() for c in _cta_words)
+                        # Only store if not already stored (nav links have priority over CTA text)
+                        if _path not in _page_names or not _is_cta:
+                            if not _is_cta:
+                                _page_names[_path] = _text[:60]
+                            elif _path not in _page_names:
+                                # fallback: derive from path slug
+                                _page_names[_path] = _path.strip('/').replace('-',' ').replace('_',' ').title()
                     _found.append(_path)
                 return _found
 
