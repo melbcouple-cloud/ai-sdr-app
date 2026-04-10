@@ -4,3 +4,4 @@ requests
 beautifulsoup4
 curl_cffi
 lxml
+openpyxl
