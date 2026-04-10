@@ -307,52 +307,65 @@ def quick_scan(url, page_name='Scanned'):
     for v in soup.find_all(['video','iframe']):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
-            vname = v.get('title','') or 'video'
-            # Find the trigger button/link that opens this video
+            # --- Video title: prefer iframe title attr, then nearby heading, then page name ---
+            vname = v.get('title','').strip()
+            if not vname or vname.startswith('http'):
+                # look for closest heading BEFORE the iframe in the same container
+                _vpar = v.find_parent(['section','article','div','figure'])
+                if _vpar:
+                    _vh = _vpar.find(['h1','h2','h3','h4'])
+                    if _vh:
+                        vname = _vh.get_text(strip=True)[:60]
+            if not vname:
+                vname = page_name
+
+            # --- CTA Text: human-readable trigger label ---
+            _cta_text = 'Watch video'
+
+            # --- CTA Location: scan the WHOLE page for a play/watch trigger button ---
+            # Strategy: look globally for buttons/links that could open this video
+            # (play buttons are often outside the iframe container entirely)
             _vid_loc = None
-            # Walk up DOM looking for a trigger button with play/video/modal keywords
-            _par = v.parent
-            for _ in range(8):
-                if _par is None or _par.name is None:
-                    break
-                # search siblings and parent for a button/link trigger
-                for _el in _par.find_all(['button', 'a']):
-                    _el_str = ' '.join([
-                        ' '.join(_el.get('class', [])),
-                        _el.get('id', ''),
-                        _el.get('data-target', ''),
-                        _el.get('data-modal', ''),
-                        _el.get('aria-label', ''),
-                        _el.get_text(strip=True)
-                    ]).lower()
-                    if any(kw in _el_str for kw in ['play', 'video', 'watch', 'modal']):
-                        _vid_loc = detect_location(_el)
+
+            # 1. Check for any button/link in the page with play/watch/video class or text
+            for _el in soup.find_all(['button', 'a']):
+                _cls = ' '.join(_el.get('class', [])).lower()
+                _lbl = _el.get('aria-label', '').lower()
+                _txt = _el.get_text(strip=True).lower()
+                _dat = ' '.join([
+                    _el.get('data-target',''),
+                    _el.get('data-video',''),
+                    _el.get('data-src',''),
+                    _el.get('data-modal',''),
+                ]).lower()
+                if any(kw in (_cls + _lbl + _txt + _dat)
+                       for kw in ['play', 'watch', 'video', 'vimeo', 'youtube']):
+                    _loc_candidate = detect_location(_el)
+                    if _loc_candidate != 'modal':
+                        _vid_loc = _loc_candidate
+                        _cta_text = _el.get_text(strip=True) or 'Watch video'
+                        if not _cta_text.strip():
+                            _cta_text = _el.get('aria-label','Watch video') or 'Watch video'
                         break
-                if _vid_loc:
-                    break
-                _par = _par.parent
+
+            # 2. If no trigger found, use the section that contains the iframe
             if not _vid_loc:
-                # fallback: nearest section/article outside modal
                 _outer = v.find_parent(['section', 'article', 'main'])
-                if _outer:
-                    _vid_loc = detect_location(_outer)
-                    # if still modal go one more level up
-                    if _vid_loc == 'modal':
-                        _outer2 = _outer.find_parent(['section', 'article', 'main'])
-                        if _outer2:
-                            _vid_loc = detect_location(_outer2)
-                if not _vid_loc:
-                    _vid_loc = detect_location(v)
-            # Clean video title — use page h1/h2 if iframe title is empty or a URL
-            if not vname or vname == 'video' or vname.startswith('http'):
-                _h = soup.find(['h1','h2'])
-                vname = _h.get_text(strip=True)[:50] if _h else page_name
-            # Intent: education/awareness sites → engagement; fallback → engagement
+                while _outer:
+                    _loc_candidate = detect_location(_outer)
+                    if _loc_candidate != 'modal':
+                        _vid_loc = _loc_candidate
+                        break
+                    _outer = _outer.find_parent(['section', 'article', 'main'])
+
+            # 3. Final fallback
+            if not _vid_loc:
+                _vid_loc = 'body'
             _intent = 'engagement'
             for ev in ['video_start','video_progress_25','video_progress_50','video_progress_75','video_complete']:
                 rows.append({"Page":page_name,"Category":"video","Event Name":ev,
                              "Action":"video","Label":vname,
-                             "CTA Location":_vid_loc,"CTA Text":vname,
+                             "CTA Location":_vid_loc,"CTA Text":_cta_text,
                              "Business Intent":_intent,"Page URL":clean_url,"Event ID":""})
     return rows
 
