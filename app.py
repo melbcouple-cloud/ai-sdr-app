@@ -190,10 +190,19 @@ def build_excel(df, project_name):
 def quick_scan(url):
     from urllib.parse import urlparse, urljoin
     parsed = urlparse(url)
+    # Extract credentials from URL if present (user:pass@host format)
+    auth = None
+    if parsed.username and parsed.password:
+        auth = (parsed.username, parsed.password)
+        port_part = f":{parsed.port}" if parsed.port else ""
+        clean_url = parsed._replace(netloc=parsed.hostname + port_part).geturl()
+    else:
+        clean_url = url
+    parsed = urlparse(clean_url)
     html = None
     try:
         from curl_cffi import requests as cr
-        r = cr.get(url, impersonate="chrome110", timeout=20)
+        r = cr.get(clean_url, impersonate="chrome110", timeout=20, auth=auth)
         if r.status_code == 200:
             html = r.text
     except Exception:
@@ -201,7 +210,8 @@ def quick_scan(url):
     if not html:
         try:
             import requests
-            r = requests.get(url, timeout=15, headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
+            r = requests.get(clean_url, timeout=15, auth=auth,
+                headers={"User-Agent":"Mozilla/5.0 Chrome/120"})
             if r.status_code == 200:
                 html = r.text
         except Exception:
