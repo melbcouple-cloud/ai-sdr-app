@@ -187,7 +187,7 @@ def build_excel(df, project_name):
     buf = BytesIO(); wb.save(buf); buf.seek(0)
     return buf
 
-def quick_scan(url):
+def quick_scan(url, page_name='Scanned'):
     from urllib.parse import urlparse, urljoin
     parsed = urlparse(url)
     # Extract credentials from URL if present (user:pass@host format)
@@ -256,24 +256,24 @@ def quick_scan(url):
         ext  = os.path.splitext(fp.path)[1].lower()
         loc  = detect_location(a)
         if ext in dl_exts:
-            rows.append({"Page":"Scanned","Category":"download","Event Name":f"download_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"consideration","Page URL":url,"Event ID":""})
+            rows.append({"Page":page_name,"Category":"download","Event Name":f"download_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"consideration","Page URL":clean_url,"Event ID":""})
         elif fp.netloc and fp.netloc != parsed.netloc:
-            rows.append({"Page":"Scanned","Category":"exit","Event Name":f"exit_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"exit","Page URL":url,"Event ID":""})
+            rows.append({"Page":page_name,"Category":"exit","Event Name":f"exit_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"exit","Page URL":clean_url,"Event ID":""})
         elif href and not href.startswith('#') and not href.startswith('mailto'):
-            rows.append({"Page":"Scanned","Category":"navigation","Event Name":f"link_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"engagement","Page URL":url,"Event ID":""})
+            rows.append({"Page":page_name,"Category":"navigation","Event Name":f"link_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"engagement","Page URL":clean_url,"Event ID":""})
     for frm in soup.find_all('form'):
         fname = frm.get('id') or frm.get('name') or 'contact_form'
         if isinstance(fname,list): fname='_'.join(fname)
         loc = detect_location(frm)
         for ev,intent in [('form_begins','acquisition'),('form_success','conversion'),('form_error','engagement'),('form_abandoned','engagement')]:
-            rows.append({"Page":"Scanned","Category":"form","Event Name":f"{ev}_{slug(str(fname))[:20]}","Action":ev,"Label":str(fname),"CTA Location":loc,"CTA Text":str(fname),"Business Intent":intent,"Page URL":url,"Event ID":""})
+            rows.append({"Page":page_name,"Category":"form","Event Name":f"{ev}_{slug(str(fname))[:20]}","Action":ev,"Label":str(fname),"CTA Location":loc,"CTA Text":str(fname),"Business Intent":intent,"Page URL":clean_url,"Event ID":""})
     for v in soup.find_all(['video','iframe']):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
             vname = v.get('title','') or 'video'
             loc = detect_location(v)
             for ev in ['video_begins','video_progression_25','video_progression_50','video_progression_75','video_ends']:
-                rows.append({"Page":"Scanned","Category":"video","Event Name":ev,"Action":ev.split("_")[0],"Label":vname,"CTA Location":loc,"CTA Text":src,"Business Intent":"consideration","Page URL":url,"Event ID":""})
+                rows.append({"Page":page_name,"Category":"video","Event Name":ev,"Action":ev.split("_")[0],"Label":vname,"CTA Location":loc,"CTA Text":src,"Business Intent":"consideration","Page URL":clean_url,"Event ID":""})
     return rows
 
 # APP
@@ -354,23 +354,30 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
                 _auth_part = ''
                 _base_clean = base
 
+            # build clean base (no credentials) and auth tuple for quick_scan
+            _netloc_clean = _parsed.hostname + (f':{_parsed.port}' if _parsed.port else '')
+            _scheme = _parsed.scheme
+            _base_no_auth = f'{_scheme}://{_netloc_clean}'
+
             scan_targets = []
             if pages:
-                # scan each page path
                 for pname, ppath in pages:
                     path = ppath if ppath.startswith('/') else f'/{ppath}'
-                    full_url = f'{_parsed.scheme}://{_auth_part}{_up(_base_clean).netloc}{path}' if _auth_part else f'{_base_clean}{path}'
+                    # reconstruct with credentials embedded so quick_scan can extract auth
+                    if _auth_part:
+                        full_url = f'{_scheme}://{_auth_part}{_netloc_clean}{path}'
+                    else:
+                        full_url = f'{_base_no_auth}{path}'
                     scan_targets.append((pname, full_url))
             else:
-                # no pages listed — scan just the base URL
-                scan_targets.append(('Scanned', base))
+                scan_targets.append(('Homepage', base))
 
             progress_bar = st.progress(0, text=f'Scanning 0 / {len(scan_targets)} pages...')
             scan_summary = []
 
             for i, (pname, full_url) in enumerate(scan_targets):
                 progress_bar.progress((i) / len(scan_targets), text=f'Scanning {i+1} / {len(scan_targets)}: {pname}...')
-                scanned = quick_scan(full_url)
+                scanned = quick_scan(full_url, page_name=pname)
                 count = 0
                 for r in scanned:
                     r['Page'] = pname          # override with correct page name
