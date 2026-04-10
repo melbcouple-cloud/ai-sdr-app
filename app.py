@@ -314,8 +314,12 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
     st.markdown('**Paste your page list** (one per line as: Page Name | URL)')
     pages_input = st.text_area('Pages', height=180, placeholder='Homepage | /\nHCP Page | /hcp\nISI | /isi\nResources | /resources')
 
-    st.markdown('**Or scan a live / staging URL** (auto-imports detected events)')
-    scan_url_input = st.text_input('Scan URL (optional)', placeholder='https://staging.example.com')
+    st.markdown('**Or scan a live / staging URL** (auto-imports detected events for ALL pages above)')
+    scan_url_input = st.text_input(
+        'Base URL for scanning (optional)',
+        placeholder='https://staging.example.com  or  https://user:pass@staging.example.com'
+    )
+    st.caption('If provided, each page path above will be scanned automatically. Leave blank to use manual rules only.')
 
     if st.button('Generate Draft SDR', type='primary', use_container_width=True):
         all_rows = []
@@ -330,20 +334,64 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
                     pages.append((parts[0].strip(), parts[1].strip()))
                 else:
                     pages.append((line, f'/{slug(line)}'))
+
+        # --- manual rule-based events for all pages ---
         for pname, purl in pages:
             new_rows, ga = infer_events(pname, purl, site_type, ga)
             all_rows.extend(new_rows)
-        if scan_url_input.strip():
-            with st.spinner('Scanning...'):
-                scanned = quick_scan(scan_url_input.strip())
-            for r in scanned:
-                r['Event ID'] = f'ga{ga}'; ga += 1
-            all_rows.extend(scanned)
-            st.success(f'Scanned: {len(scanned)} elements detected')
+
+        # --- batch scan: base_url + each page path ---
+        base = scan_url_input.strip().rstrip('/')
+        if base:
+            from urllib.parse import urlparse as _up
+            _parsed = _up(base)
+            # extract auth from base url once
+            if _parsed.username and _parsed.password:
+                _auth_part = f'{_parsed.username}:{_parsed.password}@'
+                _clean_host = _parsed.hostname + (f':{_parsed.port}' if _parsed.port else '')
+                _base_clean = f'{_parsed.scheme}://{_clean_host}'
+            else:
+                _auth_part = ''
+                _base_clean = base
+
+            scan_targets = []
+            if pages:
+                # scan each page path
+                for pname, ppath in pages:
+                    path = ppath if ppath.startswith('/') else f'/{ppath}'
+                    full_url = f'{_parsed.scheme}://{_auth_part}{_up(_base_clean).netloc}{path}' if _auth_part else f'{_base_clean}{path}'
+                    scan_targets.append((pname, full_url))
+            else:
+                # no pages listed — scan just the base URL
+                scan_targets.append(('Scanned', base))
+
+            progress_bar = st.progress(0, text=f'Scanning 0 / {len(scan_targets)} pages...')
+            scan_summary = []
+
+            for i, (pname, full_url) in enumerate(scan_targets):
+                progress_bar.progress((i) / len(scan_targets), text=f'Scanning {i+1} / {len(scan_targets)}: {pname}...')
+                scanned = quick_scan(full_url)
+                count = 0
+                for r in scanned:
+                    r['Page'] = pname          # override with correct page name
+                    r['Event ID'] = f'ga{ga}'
+                    ga += 1
+                    count += 1
+                all_rows.extend(scanned)
+                scan_summary.append((pname, count))
+
+            progress_bar.progress(1.0, text=f'Scan complete — {len(scan_targets)} pages scanned.')
+
+            total_scanned = sum(c for _, c in scan_summary)
+            with st.expander(f'Scan Summary — {total_scanned} elements detected across {len(scan_targets)} pages', expanded=True):
+                for pname, count in scan_summary:
+                    icon = '✅' if count > 0 else '⚠️'
+                    st.caption(f'{icon} {pname}: {count} events')
+
         if all_rows:
             st.session_state.sdr_df = pd.DataFrame(all_rows)
             st.session_state.ga_counter = ga
-            st.success(f'Draft ready: {len(all_rows)} events across {len(pages)} pages')
+            st.success(f'Draft ready — {len(all_rows)} total events across {len(pages) or 1} page(s)')
             st.rerun()
         else:
             st.warning('Add at least one page or a scan URL.')
