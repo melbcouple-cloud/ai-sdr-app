@@ -342,36 +342,79 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
 
         # --- batch scan: base_url + each page path ---
         base = scan_url_input.strip().rstrip('/')
-        if base:
-            from urllib.parse import urlparse as _up
-            _parsed = _up(base)
-            # extract auth from base url once
-            if _parsed.username and _parsed.password:
-                _auth_part = f'{_parsed.username}:{_parsed.password}@'
-                _clean_host = _parsed.hostname + (f':{_parsed.port}' if _parsed.port else '')
-                _base_clean = f'{_parsed.scheme}://{_clean_host}'
-            else:
-                _auth_part = ''
-                _base_clean = base
+        if not base:
+            st.warning('Please enter a Base URL to scan.')
+            st.stop()
 
-            # build clean base (no credentials) and auth tuple for quick_scan
-            _netloc_clean = _parsed.hostname + (f':{_parsed.port}' if _parsed.port else '')
-            _scheme = _parsed.scheme
-            _base_no_auth = f'{_scheme}://{_netloc_clean}'
+        from urllib.parse import urlparse as _up
+        import requests as _req
+        from bs4 import BeautifulSoup as _BS
 
+        _parsed    = _up(base)
+        _auth_tup  = (_parsed.username, _parsed.password) if _parsed.username else None
+        _netloc    = _parsed.hostname + (f':{_parsed.port}' if _parsed.port else '')
+        _scheme    = _parsed.scheme
+        _auth_pfx  = f'{_parsed.username}:{_parsed.password}@' if _parsed.username else ''
+
+        def _make_url(path):
+            p = path if path.startswith('/') else f'/{path}'
+            return f'{_scheme}://{_auth_pfx}{_netloc}{p}'
+
+        # --- Auto-discover all unique internal pages ---
+        with st.spinner('Discovering pages from site navigation...'):
+            _seen  = set()
             scan_targets = []
-            if pages:
-                for pname, ppath in pages:
-                    path = ppath if ppath.startswith('/') else f'/{ppath}'
-                    # reconstruct with credentials embedded so quick_scan can extract auth
-                    if _auth_part:
-                        full_url = f'{_scheme}://{_auth_part}{_netloc_clean}{path}'
-                    else:
-                        full_url = f'{_base_no_auth}{path}'
-                    scan_targets.append((pname, full_url))
-            else:
-                scan_targets.append(('Homepage', base))
+            try:
+                _resp = _req.get(_make_url('/'), auth=_auth_tup,
+                                 headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=15)
+                if _resp.status_code != 200:
+                    st.error(f'Could not reach {base} — HTTP {_resp.status_code}')
+                    st.stop()
+                _soup = _BS(_resp.text, 'lxml')
+                scan_targets.append(('Homepage', _make_url('/')))
+                _seen.add('/')
+                # prefer nav/header links first, then fall back to all links
+                _candidates = []
+                for _container in _soup.find_all(['nav','header']):
+                    for _a in _container.find_all('a', href=True):
+                        _candidates.append(_a)
+                if not _candidates:
+                    _candidates = _soup.find_all('a', href=True)
+                for _a in _candidates:
+                    _href = _a.get('href','').strip()
+                    _text = _a.get_text(strip=True)
+                    # keep only internal paths, skip files/anchors/external
+                    if (not _href or not _href.startswith('/')
+                            or _href.startswith('//')
+                            or _href in _seen
+                            or not _text or len(_text) < 2 or len(_text) > 60
+                            or '.' in _href.split('/')[-1]):
+                        continue
+                    _seen.add(_href)
+                    scan_targets.append((_text[:50], _make_url(_href)))
+                    if len(scan_targets) >= 30:
+                        break
+            except Exception as _ex:
+                st.error(f'Page discovery failed: {_ex}')
+                st.stop()
 
+        # Add any manually entered extra pages
+        for _ep_name, _ep_path in manual_pages:
+            _p = _ep_path if _ep_path.startswith('/') else f'/{_ep_path}'
+            if _p not in _seen:
+                scan_targets.append((_ep_name, _make_url(_p)))
+                _seen.add(_p)
+
+        # Show discovered pages to user
+        with st.expander(f'📋 {len(scan_targets)} pages discovered — click to preview', expanded=True):
+            for _i, (_pn, _pu) in enumerate(scan_targets):
+                _clean_disp = _pu.replace(f'{_scheme}://{_auth_pfx}', f'{_scheme}://') if _auth_pfx else _pu
+                st.caption(f'{_i+1}. **{_pn}** — `{_clean_disp}`')
+
+            if not scan_targets:
+                st.error('Could not build scan targets. Check your base URL.')
+                st.stop()
+            st.caption(f'Will scan {len(scan_targets)} page(s): ' + ', '.join(f"{n} ({u.split(netloc_clean if "netloc_clean" in dir() else "@")[-1].split("@")[-1]})" for n,u in scan_targets[:5]) + ('...' if len(scan_targets)>5 else ''))
             progress_bar = st.progress(0, text=f'Scanning 0 / {len(scan_targets)} pages...')
             scan_summary = []
 
@@ -398,10 +441,10 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
         if all_rows:
             st.session_state.sdr_df = pd.DataFrame(all_rows)
             st.session_state.ga_counter = ga
-            st.success(f'Draft ready — {len(all_rows)} total events across {len(pages) or 1} page(s)')
+            st.success(f'Draft ready — {len(all_rows)} total events across {len(scan_targets)} page(s)')
             st.rerun()
         else:
-            st.warning('Add at least one page or a scan URL.')
+            st.warning('Please enter a Base URL to scan.')
 
 if has_draft:
     with st.expander('Step 2 - Review and Edit Draft SDR', expanded=True):
