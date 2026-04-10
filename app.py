@@ -218,7 +218,7 @@ def quick_scan(url):
             pass
     if not html:
         return []
-        from bs4 import BeautifulSoup
+    from bs4 import BeautifulSoup
     soup = BeautifulSoup(html, "lxml")
     rows = []
     dl_exts = {".pdf",".docx",".xlsx",".zip",".ppt",".pptx"}
