@@ -272,7 +272,6 @@ def quick_scan(url, page_name='Scanned'):
             _hel = frm.find(_tag) or (frm.find_previous(_tag))
             if _hel:
                 _nearby_h = _hel.get_text(strip=True)[:40]
-                break
         # look for submit button text
         _submit_btn = frm.find('button', attrs={'type':'submit'}) or frm.find('input', attrs={'type':'submit'})
         _btn_text = ''
@@ -346,7 +345,6 @@ def quick_scan(url, page_name='Scanned'):
                         _cta_text = _el.get_text(strip=True) or 'Watch video'
                         if not _cta_text.strip():
                             _cta_text = _el.get('aria-label','Watch video') or 'Watch video'
-                        break
 
             # 2. If no trigger found, use the section that contains the iframe
             if not _vid_loc:
@@ -355,7 +353,6 @@ def quick_scan(url, page_name='Scanned'):
                     _loc_candidate = detect_location(_outer)
                     if _loc_candidate != 'modal':
                         _vid_loc = _loc_candidate
-                        break
                     _outer = _outer.find_parent(['section', 'article', 'main'])
 
             # 3. Final fallback
@@ -405,14 +402,23 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
     st.session_state.project_name = project_name
 
     st.markdown('**Paste your page list** (one per line as: Page Name | URL)')
-    pages_input = st.text_area('Pages', height=180, placeholder='Homepage | /\nHCP Page | /hcp\nISI | /isi\nResources | /resources')
-
-    st.markdown('**Or scan a live / staging URL** (auto-imports detected events for ALL pages above)')
-    scan_url_input = st.text_input(
-        'Base URL for scanning (optional)',
-        placeholder='https://staging.example.com  or  https://user:pass@staging.example.com'
-    )
-    st.caption('If provided, each page path above will be scanned automatically. Leave blank to use manual rules only.')
+    st.markdown('**Choose how to discover pages**')
+    disc_tab1, disc_tab2, disc_tab3 = st.tabs(['🔍 Auto-Crawl', '🗺️ Sitemap URL', '📋 Paste URL List'])
+    with disc_tab1:
+        scan_url_input = st.text_input('Root URL (auto-discovers all pages)',
+            placeholder='https://www.opzelura.com  or  https://user:pass@staging.example.com', key='crawl_url')
+        st.caption('Crawls the site recursively up to depth 3. Best for most sites.')
+    with disc_tab2:
+        sitemap_url_input = st.text_input('Sitemap URL',
+            placeholder='https://www.opzelura.com/sitemap.xml', key='sitemap_url')
+        st.caption('Parses all URLs from sitemap XML. Fast — but may miss unlisted pages.')
+    with disc_tab3:
+        manual_url_list = st.text_area('Paste full URLs — one per line', height=160,
+            placeholder='https://www.opzelura.com/\nhttps://www.opzelura.com/atopic-dermatitis/\nhttps://www.opzelura.com/vitiligo/',
+            key='manual_urls')
+        st.caption('Most accurate — paste the full list from your SEO/web team. 100% coverage guaranteed.')
+    pages_input = st.text_area('Additional pages (Name | /path)', height=80,
+        placeholder='Homepage | /\nHCP Page | /hcp', help='Extra pages not covered by discovery above.')
 
     if st.button('Generate Draft SDR', type='primary', use_container_width=True):
         all_rows = []
@@ -430,10 +436,19 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
                 else:
                     manual_pages.append((line, f'/{slug(line)}'))
 
-        base = scan_url_input.strip().rstrip('/')
-        if not base:
-            st.warning('Please enter a Base URL to scan.')
+        _crawl_input   = st.session_state.get('crawl_url', '').strip().rstrip('/')
+        _sitemap_input = st.session_state.get('sitemap_url', '').strip()
+        _manual_input  = st.session_state.get('manual_urls', '').strip()
+
+        base = _crawl_input or _sitemap_input or ''
+        if not base and not _manual_input:
+            st.warning('Please provide a URL in at least one discovery tab.')
             st.stop()
+        if not base and _manual_input:
+            from urllib.parse import urlparse as _up2
+            _first = _manual_input.strip().splitlines()[0].strip()
+            _p2 = _up2(_first)
+            base = f'{_p2.scheme}://{_p2.netloc}'
 
         from urllib.parse import urlparse as _up
         import requests as _req
@@ -449,92 +464,130 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
             p = path if path.startswith('/') else f'/{path}'
             return f'{_scheme}://{_auth_pfx}{_netloc}{p}'
 
-        # --- Auto-discover ALL unique internal pages (nav + deep links) ---
-        with st.spinner('Discovering pages from site navigation + deep links...'):
-            _seen  = set()
-            scan_targets = []   # (page_name, full_url)
-            _page_names = {}    # path -> best display name
+        # --- Shared helper ---
+        def _collect_links(html_text, _seen_set, _pnames, _netloc_str):
+            from urllib.parse import urlparse as _up2
+            _s = _BS(html_text, 'lxml')
+            _found = []
+            _cta_words = ['sign up','learn more','read more','click here','get started','discover','explore','view','see how','stay up']
+            for _a in _s.find_all('a', href=True):
+                _href = _a.get('href','').strip()
+                _text = (_a.get('title','') or _a.get_text(strip=True) or '').strip()
+                _ph = _up2(_href)
+                if _ph.netloc and _ph.netloc != _netloc_str:
+                    continue
+                _path = _ph.path
+                if (not _path or not _path.startswith('/') or _path.startswith('//')
+                        or _path in _seen_set or '.' in _path.split('/')[-1] or len(_text) > 80):
+                    continue
+                if _text and 1 < len(_text) < 80:
+                    _is_cta = any(c in _text.lower() for c in _cta_words)
+                    if _path not in _pnames or not _is_cta:
+                        if not _is_cta:
+                            _pnames[_path] = _text[:60]
+                        elif _path not in _pnames:
+                            _pnames[_path] = _path.strip('/').replace('-',' ').replace('_',' ').title()
+                _found.append(_path)
+            return _found
 
-            def _collect_links(html_text, source_label=''):
-                """Extract all unique internal paths from a page's HTML."""
-                _s = _BS(html_text, 'lxml')
-                _found = []
-                for _a in _s.find_all('a', href=True):
-                    _href = _a.get('href','').strip()
-                    _text = (_a.get('title','') or _a.get_text(strip=True) or '').strip()
-                    # normalise: strip query/fragment, keep path only
-                    from urllib.parse import urlparse as _up2, urljoin as _uj
-                    _parsed_href = _up2(_href)
-                    # accept relative paths AND full URLs pointing to same host
-                    if _parsed_href.netloc and _parsed_href.netloc != _netloc:
-                        continue  # external
-                    _path = _parsed_href.path
-                    if (not _path or not _path.startswith('/')
-                            or _path.startswith('//')
-                            or _path in _seen
-                            or '.' in _path.split('/')[-1]   # skip file links
-                            or len(_text) > 80):
-                        continue
-                    if _text and 1 < len(_text) < 80:
-                        # Prefer shorter, nav-style names; skip CTA phrases
-                        _cta_words = ['sign up','learn more','read more','click here','get started',
-                                      'discover','explore','view','see how','stay up']
-                        _is_cta = any(c in _text.lower() for c in _cta_words)
-                        # Only store if not already stored (nav links have priority over CTA text)
-                        if _path not in _page_names or not _is_cta:
-                            if not _is_cta:
-                                _page_names[_path] = _text[:60]
-                            elif _path not in _page_names:
-                                # fallback: derive from path slug
-                                _page_names[_path] = _path.strip('/').replace('-',' ').replace('_',' ').title()
-                    _found.append(_path)
-                return _found
+        _seen       = set()
+        scan_targets = []
+        _page_names  = {}
 
-            try:
-                # Pass 1 — fetch homepage, collect nav + all body links
-                _resp = _req.get(_make_url('/'), auth=_auth_tup,
-                                 headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=15)
-                if _resp.status_code != 200:
-                    st.error(f'Could not reach {base} — HTTP {_resp.status_code}')
-                    st.stop()
-
-                scan_targets.append(('Homepage', _make_url('/')))
-                _seen.add('/')
-                _page_names['/'] = 'Homepage'
-
-                _pass1_paths = _collect_links(_resp.text, 'homepage')
-                _queue = []
-                for _p in _pass1_paths:
-                    if _p not in _seen:
-                        _seen.add(_p)
-                        _queue.append(_p)
-
-                # Pass 2 — fetch each discovered page and collect their links too
-                # This catches pages only linked from inner pages (e.g. /sign-up linked from modal)
-                _deep_found = []
-                for _qpath in _queue[:20]:   # cap at 20 pages for pass-2 fetching
+        # ── METHOD 1: Manual URL list ──
+        if _manual_input:
+            with st.spinner('Loading pages from pasted URL list...'):
+                from urllib.parse import urlparse as _up3
+                for _u in [u.strip() for u in _manual_input.splitlines() if u.strip()]:
                     try:
-                        _r2 = _req.get(_make_url(_qpath), auth=_auth_tup,
-                                       headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=10)
-                        if _r2.status_code == 200:
-                            _sub_paths = _collect_links(_r2.text, _qpath)
-                            for _sp in _sub_paths:
-                                if _sp not in _seen:
-                                    _seen.add(_sp)
-                                    _deep_found.append(_sp)
+                        _pu = _up3(_u)
+                        if _pu.scheme and _pu.netloc:
+                            _path = _pu.path or '/'
+                            _name = _path.strip('/').replace('-',' ').replace('_',' ').title() or 'Homepage'
+                            if _u not in [t[1] for t in scan_targets]:
+                                scan_targets.append((_name[:60], _u))
                     except Exception:
                         pass
+                st.success(f'✅ Loaded {len(scan_targets)} pages from pasted URL list')
 
-                # Build final ordered scan_targets: homepage → pass1 → pass2 deep
-                for _p in _queue + _deep_found:
-                    _name = _page_names.get(_p, _p.strip('/').replace('-',' ').replace('_',' ').title() or _p)
-                    scan_targets.append((_name[:60], _make_url(_p)))
-                    if len(scan_targets) >= 40:
-                        break
+        # ── METHOD 2: Sitemap XML ──
+        elif _sitemap_input:
+            with st.spinner(f'Parsing sitemap...'):
+                try:
+                    import xml.etree.ElementTree as _ET
+                    _sr = _req.get(_sitemap_input, headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=15)
+                    _sr.raise_for_status()
+                    _root_xml = _ET.fromstring(_sr.content)
+                    _ns = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+                    _all_locs = [l.text.strip() for l in _root_xml.findall('.//sm:loc', _ns)]
+                    _final_urls = []
+                    for _su in _all_locs:
+                        if _su.endswith('.xml'):
+                            try:
+                                _cr = _req.get(_su, headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=10)
+                                _cr.raise_for_status()
+                                _cr_root = _ET.fromstring(_cr.content)
+                                for _cl in _cr_root.findall('.//sm:loc', _ns):
+                                    _final_urls.append(_cl.text.strip())
+                            except Exception:
+                                _final_urls.append(_su)
+                        else:
+                            _final_urls.append(_su)
+                    from urllib.parse import urlparse as _up4
+                    for _u in _final_urls:
+                        _pu = _up4(_u)
+                        if _pu.netloc != _netloc:
+                            continue
+                        _path = _pu.path or '/'
+                        _name = _path.strip('/').replace('-',' ').replace('_',' ').title() or 'Homepage'
+                        if _u not in [t[1] for t in scan_targets]:
+                            scan_targets.append((_name[:60], _u))
+                    st.success(f'✅ Found {len(scan_targets)} pages in sitemap')
+                except Exception as _se:
+                    st.warning(f'Sitemap parse failed: {_se}. Switching to auto-crawl.')
 
-            except Exception as _ex:
-                st.error(f'Page discovery failed: {_ex}')
-                st.stop()
+        # ── METHOD 3: Auto-crawl ──
+        if not scan_targets and _crawl_input:
+            with st.spinner('Auto-discovering pages by crawling...'):
+                try:
+                    _resp = _req.get(_make_url('/'), auth=_auth_tup,
+                                     headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=15)
+                    if _resp.status_code != 200:
+                        st.error(f'Could not reach {base} — HTTP {_resp.status_code}')
+                        st.stop()
+                    scan_targets.append(('Homepage', _make_url('/')))
+                    _seen.add('/')
+                    _page_names['/'] = 'Homepage'
+                    _pass1 = _collect_links(_resp.text, _seen, _page_names, _netloc)
+                    _queue = []
+                    for _p in _pass1:
+                        if _p not in _seen:
+                            _seen.add(_p)
+                            _queue.append(_p)
+                    _deep = []
+                    for _qp in _queue[:30]:
+                        try:
+                            _r2 = _req.get(_make_url(_qp), auth=_auth_tup,
+                                           headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=10)
+                            if _r2.status_code == 200:
+                                for _sp in _collect_links(_r2.text, _seen, _page_names, _netloc):
+                                    if _sp not in _seen:
+                                        _seen.add(_sp)
+                                        _deep.append(_sp)
+                        except Exception:
+                            pass
+                    for _p in _queue + _deep:
+                        _name = _page_names.get(_p, _p.strip('/').replace('-',' ').replace('_',' ').title() or _p)
+                        scan_targets.append((_name[:60], _make_url(_p)))
+                    st.success(f'✅ Auto-discovered {len(scan_targets)} pages')
+                except Exception as _ce:
+                    st.error(f'Crawl failed: {_ce}')
+                    st.stop()
+
+        if not scan_targets:
+            st.warning('No pages found. Please check your URL or try another discovery method.')
+            st.stop()
+
 
         # Add any manually entered extra pages
         for _ep_name, _ep_path in manual_pages:
