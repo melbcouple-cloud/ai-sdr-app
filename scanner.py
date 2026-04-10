@@ -395,7 +395,7 @@ def scan_website(url, options=None):
 
     if not url.startswith("http"):
         url = "https://" + url
-    base_url = url.split("/")[2] if "//" in url else url
+    base_url = url.split("/")[2].split("@")[-1] if "//" in url else url
 
     print("\n" + "="*60)
     print("SCANNING: " + url)
