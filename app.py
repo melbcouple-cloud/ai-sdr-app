@@ -324,23 +324,19 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
     if st.button('Generate Draft SDR', type='primary', use_container_width=True):
         all_rows = []
         ga = st.session_state.ga_counter
-        pages = []
+
+        # parse any manually added extra pages
+        manual_pages = []
         if pages_input.strip():
             for line in pages_input.strip().splitlines():
                 line = line.strip()
                 if not line: continue
                 if '|' in line:
                     parts = line.split('|', 1)
-                    pages.append((parts[0].strip(), parts[1].strip()))
+                    manual_pages.append((parts[0].strip(), parts[1].strip()))
                 else:
-                    pages.append((line, f'/{slug(line)}'))
+                    manual_pages.append((line, f'/{slug(line)}'))
 
-        # --- manual rule-based events for all pages ---
-        for pname, purl in pages:
-            new_rows, ga = infer_events(pname, purl, site_type, ga)
-            all_rows.extend(new_rows)
-
-        # --- batch scan: base_url + each page path ---
         base = scan_url_input.strip().rstrip('/')
         if not base:
             st.warning('Please enter a Base URL to scan.')
