@@ -262,11 +262,45 @@ def quick_scan(url, page_name='Scanned'):
         elif href and not href.startswith('#') and not href.startswith('mailto'):
             rows.append({"Page":page_name,"Category":"navigation","Event Name":f"link_click_{slug(text)[:30]}","Action":"click","Label":full,"CTA Location":loc,"CTA Text":text,"Business Intent":"engagement","Page URL":clean_url,"Event ID":""})
     for frm in soup.find_all('form'):
-        fname = frm.get('id') or frm.get('name') or 'contact_form'
-        if isinstance(fname,list): fname='_'.join(fname)
+        # smart form name detection
+        _fid   = frm.get('id','') or frm.get('name','') or ''
+        _faction = frm.get('action','') or ''
+        _aria  = frm.get('aria-label','') or ''
+        # look for nearby heading
+        _nearby_h = ''
+        for _tag in ['h1','h2','h3','legend']:
+            _hel = frm.find(_tag) or (frm.find_previous(_tag))
+            if _hel:
+                _nearby_h = _hel.get_text(strip=True)[:40]
+                break
+        # look for submit button text
+        _submit_btn = frm.find('button', attrs={'type':'submit'}) or frm.find('input', attrs={'type':'submit'})
+        _btn_text = ''
+        if _submit_btn:
+            _btn_text = (_submit_btn.get_text(strip=True) or _submit_btn.get('value',''))[:30]
+        # pick best name: aria > nearby heading > form id > action path > submit btn > fallback
+        if _aria:
+            fname = _aria
+        elif _nearby_h:
+            fname = _nearby_h
+        elif _fid:
+            fname = _fid
+        elif _faction and '/' in _faction:
+            fname = _faction.rstrip('/').split('/')[-1]
+        elif _btn_text:
+            fname = _btn_text
+        else:
+            fname = 'form'
+        if isinstance(fname, list): fname = '_'.join(fname)
+        fname = str(fname).strip()
         loc = detect_location(frm)
-        for ev,intent in [('form_begins','acquisition'),('form_success','conversion'),('form_error','engagement'),('form_abandoned','engagement')]:
-            rows.append({"Page":page_name,"Category":"form","Event Name":f"{ev}_{slug(str(fname))[:20]}","Action":ev,"Label":str(fname),"CTA Location":loc,"CTA Text":str(fname),"Business Intent":intent,"Page URL":clean_url,"Event ID":""})
+        for ev, intent in [('form_start', 'acquisition'), ('form_submit', 'conversion'),
+                           ('form_error', 'engagement'), ('form_abandon', 'engagement')]:
+            rows.append({"Page": page_name, "Category": "form",
+                         "Event Name": f"{ev}_{slug(fname)[:25]}",
+                         "Action": ev, "Label": fname,
+                         "CTA Location": loc, "CTA Text": _btn_text or fname,
+                         "Business Intent": intent, "Page URL": clean_url, "Event ID": ""})
     for v in soup.find_all(['video','iframe']):
         src = v.get('src','') or v.get('data-src','')
         if 'vimeo' in src or 'youtube' in src or v.name=='video':
@@ -356,40 +390,79 @@ with st.expander('Step 1 - Project Setup and Page List', expanded=not has_draft)
             p = path if path.startswith('/') else f'/{path}'
             return f'{_scheme}://{_auth_pfx}{_netloc}{p}'
 
-        # --- Auto-discover all unique internal pages ---
-        with st.spinner('Discovering pages from site navigation...'):
+        # --- Auto-discover ALL unique internal pages (nav + deep links) ---
+        with st.spinner('Discovering pages from site navigation + deep links...'):
             _seen  = set()
-            scan_targets = []
+            scan_targets = []   # (page_name, full_url)
+            _page_names = {}    # path -> best display name
+
+            def _collect_links(html_text, source_label=''):
+                """Extract all unique internal paths from a page's HTML."""
+                _s = _BS(html_text, 'lxml')
+                _found = []
+                for _a in _s.find_all('a', href=True):
+                    _href = _a.get('href','').strip()
+                    _text = (_a.get('title','') or _a.get_text(strip=True) or '').strip()
+                    # normalise: strip query/fragment, keep path only
+                    from urllib.parse import urlparse as _up2, urljoin as _uj
+                    _parsed_href = _up2(_href)
+                    # accept relative paths AND full URLs pointing to same host
+                    if _parsed_href.netloc and _parsed_href.netloc != _netloc:
+                        continue  # external
+                    _path = _parsed_href.path
+                    if (not _path or not _path.startswith('/')
+                            or _path.startswith('//')
+                            or _path in _seen
+                            or '.' in _path.split('/')[-1]   # skip file links
+                            or len(_text) > 80):
+                        continue
+                    if _text and 1 < len(_text) < 80:
+                        _page_names[_path] = _text[:60]
+                    _found.append(_path)
+                return _found
+
             try:
+                # Pass 1 — fetch homepage, collect nav + all body links
                 _resp = _req.get(_make_url('/'), auth=_auth_tup,
                                  headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=15)
                 if _resp.status_code != 200:
                     st.error(f'Could not reach {base} — HTTP {_resp.status_code}')
                     st.stop()
-                _soup = _BS(_resp.text, 'lxml')
+
                 scan_targets.append(('Homepage', _make_url('/')))
                 _seen.add('/')
-                # prefer nav/header links first, then fall back to all links
-                _candidates = []
-                for _container in _soup.find_all(['nav','header']):
-                    for _a in _container.find_all('a', href=True):
-                        _candidates.append(_a)
-                if not _candidates:
-                    _candidates = _soup.find_all('a', href=True)
-                for _a in _candidates:
-                    _href = _a.get('href','').strip()
-                    _text = _a.get_text(strip=True)
-                    # keep only internal paths, skip files/anchors/external
-                    if (not _href or not _href.startswith('/')
-                            or _href.startswith('//')
-                            or _href in _seen
-                            or not _text or len(_text) < 2 or len(_text) > 60
-                            or '.' in _href.split('/')[-1]):
-                        continue
-                    _seen.add(_href)
-                    scan_targets.append((_text[:50], _make_url(_href)))
-                    if len(scan_targets) >= 30:
+                _page_names['/'] = 'Homepage'
+
+                _pass1_paths = _collect_links(_resp.text, 'homepage')
+                _queue = []
+                for _p in _pass1_paths:
+                    if _p not in _seen:
+                        _seen.add(_p)
+                        _queue.append(_p)
+
+                # Pass 2 — fetch each discovered page and collect their links too
+                # This catches pages only linked from inner pages (e.g. /sign-up linked from modal)
+                _deep_found = []
+                for _qpath in _queue[:20]:   # cap at 20 pages for pass-2 fetching
+                    try:
+                        _r2 = _req.get(_make_url(_qpath), auth=_auth_tup,
+                                       headers={'User-Agent':'Mozilla/5.0 Chrome/120'}, timeout=10)
+                        if _r2.status_code == 200:
+                            _sub_paths = _collect_links(_r2.text, _qpath)
+                            for _sp in _sub_paths:
+                                if _sp not in _seen:
+                                    _seen.add(_sp)
+                                    _deep_found.append(_sp)
+                    except Exception:
+                        pass
+
+                # Build final ordered scan_targets: homepage → pass1 → pass2 deep
+                for _p in _queue + _deep_found:
+                    _name = _page_names.get(_p, _p.strip('/').replace('-',' ').replace('_',' ').title() or _p)
+                    scan_targets.append((_name[:60], _make_url(_p)))
+                    if len(scan_targets) >= 40:
                         break
+
             except Exception as _ex:
                 st.error(f'Page discovery failed: {_ex}')
                 st.stop()
