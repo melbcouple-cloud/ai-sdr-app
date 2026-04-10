@@ -1,4 +1,39 @@
+import hmac
 import streamlit as st
+import os
+
+def check_password():
+    def password_entered():
+        try:
+            correct = st.secrets.get("APP_PASSWORD", "")
+        except Exception:
+            correct = os.environ.get("APP_PASSWORD", "")
+        if correct and hmac.compare_digest(st.session_state["password"], correct):
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]
+        else:
+            st.session_state["password_correct"] = False
+
+    if st.session_state.get("password_correct", False):
+        return True
+
+    st.markdown("## SDR Generator - Login")
+    st.caption("Enter your access password to continue.")
+    st.text_input("Password", type="password", on_change=password_entered, key="password")
+    if st.session_state.get("password_correct") == False:
+        st.error("Incorrect password. Please try again.")
+    return False
+
+# Skip password if APP_PASSWORD secret is not set (local dev without secrets)
+_pw_required = False
+try:
+    _pw_required = bool(st.secrets.get("APP_PASSWORD", ""))
+except Exception:
+    _pw_required = bool(os.environ.get("APP_PASSWORD", ""))
+
+if _pw_required and not check_password():
+    st.stop()
+
 import pandas as pd
 from scanner import scan_website, scan_multiple_urls
 from classifier import classify_elements, enrich_with_llm, generate_isi_events, get_pharma_template, list_pharma_templates
