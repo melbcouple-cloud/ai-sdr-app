@@ -67,7 +67,7 @@ with tab_scan:
 
     url_input = st.text_area(
         "URLs",
-        placeholder="https://www.opzelura.com/\nhttps://www.opzelura.com/eczema/\nhttps://www.opzelura.com/vitiligo/",
+        placeholder="https://www.example.com/\nhttps://www.example.com/page1/\nhttps://www.example.com/page2/",
         height=120,
         label_visibility="collapsed"
     )
