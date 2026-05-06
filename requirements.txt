@@ -1,7 +1,8 @@
 streamlit
 pandas
+openpyxl
 requests
 beautifulsoup4
-curl_cffi
 lxml
-openpyxl
+curl_cffi
+playwright
